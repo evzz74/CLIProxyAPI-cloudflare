@@ -1,19 +1,262 @@
-- name: Verify Account API Token
-  shell: bash
-  env:
-    CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-    CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-  run: |
-    RESPONSE=$(curl -sS \
-      "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/tokens/verify" \
-      -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN")
+name: Cloudflare Auth Debug
 
-    echo "$RESPONSE" | jq '{
-      success: .success,
-      status: .result.status,
-      errors: .errors,
-      messages: .messages
-    }'
+on:
+  workflow_dispatch:
 
-    echo "$RESPONSE" | jq -e \
-      '.success == true and .result.status == "active"'
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify Cloudflare Authentication
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+    steps:
+      # -------------------------------------------------------
+      # 1. 获取仓库代码
+      # -------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      # -------------------------------------------------------
+      # 2. 安装 Node.js
+      # -------------------------------------------------------
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      # -------------------------------------------------------
+      # 3. 检查 GitHub Secrets 是否存在
+      #    不会打印 Token 或 Account ID 本体
+      # -------------------------------------------------------
+      - name: Check GitHub Secrets
+        shell: bash
+        run: |
+          echo "========================================"
+          echo "Checking GitHub Secrets"
+          echo "========================================"
+
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "❌ CLOUDFLARE_API_TOKEN is EMPTY"
+            exit 1
+          else
+            echo "✅ CLOUDFLARE_API_TOKEN exists"
+          fi
+
+          if [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "❌ CLOUDFLARE_ACCOUNT_ID is EMPTY"
+            exit 1
+          else
+            echo "✅ CLOUDFLARE_ACCOUNT_ID exists"
+          fi
+
+          TOKEN_LENGTH=${#CLOUDFLARE_API_TOKEN}
+          ACCOUNT_LENGTH=${#CLOUDFLARE_ACCOUNT_ID}
+
+          echo "Token length: $TOKEN_LENGTH"
+          echo "Account ID length: $ACCOUNT_LENGTH"
+
+          if [ "$ACCOUNT_LENGTH" -ne 32 ]; then
+            echo "⚠️ Cloudflare Account ID normally has 32 characters."
+            echo "Please make sure you did not use Zone ID, Token ID, or R2 Access Key."
+          fi
+
+      # -------------------------------------------------------
+      # 4. 判断 Token 类型
+      # -------------------------------------------------------
+      - name: Detect API Token type
+        id: token_type
+        shell: bash
+        run: |
+          echo "========================================"
+          echo "Detecting API Token type"
+          echo "========================================"
+
+          if [[ "$CLOUDFLARE_API_TOKEN" == cfut_* ]]; then
+            echo "✅ Token type: User API Token (cfut_)"
+            echo "type=user" >> "$GITHUB_OUTPUT"
+
+          elif [[ "$CLOUDFLARE_API_TOKEN" == cfat_* ]]; then
+            echo "✅ Token type: Account API Token (cfat_)"
+            echo "type=account" >> "$GITHUB_OUTPUT"
+
+          else
+            echo "⚠️ Token does not use the new cfut_/cfat_ prefix."
+            echo "It may be a legacy API token."
+            echo "The workflow will first try the User Token endpoint."
+            echo "type=legacy" >> "$GITHUB_OUTPUT"
+          fi
+
+      # -------------------------------------------------------
+      # 5A. 验证 User API Token
+      # -------------------------------------------------------
+      - name: Verify User API Token
+        if: steps.token_type.outputs.type == 'user' || steps.token_type.outputs.type == 'legacy'
+        shell: bash
+        run: |
+          echo "========================================"
+          echo "Verifying User API Token"
+          echo "========================================"
+
+          HTTP_CODE=$(curl \
+            --silent \
+            --show-error \
+            --output cf-token-response.json \
+            --write-out "%{http_code}" \
+            "https://api.cloudflare.com/client/v4/user/tokens/verify" \
+            --header "Authorization: Bearer $CLOUDFLARE_API_TOKEN")
+
+          echo "HTTP status: $HTTP_CODE"
+
+          echo "Cloudflare response:"
+          jq '{
+            success: .success,
+            status: .result.status,
+            errors: .errors,
+            messages: .messages
+          }' cf-token-response.json
+
+          if [ "$HTTP_CODE" -ne 200 ]; then
+            echo ""
+            echo "❌ Cloudflare returned HTTP $HTTP_CODE"
+            exit 1
+          fi
+
+          SUCCESS=$(jq -r '.success // false' cf-token-response.json)
+          STATUS=$(jq -r '.result.status // "unknown"' cf-token-response.json)
+
+          if [ "$SUCCESS" != "true" ]; then
+            echo ""
+            echo "❌ API Token verification failed."
+            exit 1
+          fi
+
+          if [ "$STATUS" != "active" ]; then
+            echo ""
+            echo "❌ API Token status is: $STATUS"
+            exit 1
+          fi
+
+          echo ""
+          echo "✅ User API Token is VALID and ACTIVE"
+
+      # -------------------------------------------------------
+      # 5B. 验证 Account API Token
+      # -------------------------------------------------------
+      - name: Verify Account API Token
+        if: steps.token_type.outputs.type == 'account'
+        shell: bash
+        run: |
+          echo "========================================"
+          echo "Verifying Account API Token"
+          echo "========================================"
+
+          HTTP_CODE=$(curl \
+            --silent \
+            --show-error \
+            --output cf-token-response.json \
+            --write-out "%{http_code}" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/tokens/verify" \
+            --header "Authorization: Bearer $CLOUDFLARE_API_TOKEN")
+
+          echo "HTTP status: $HTTP_CODE"
+
+          echo "Cloudflare response:"
+          jq '{
+            success: .success,
+            status: .result.status,
+            errors: .errors,
+            messages: .messages
+          }' cf-token-response.json
+
+          if [ "$HTTP_CODE" -ne 200 ]; then
+            echo ""
+            echo "❌ Cloudflare returned HTTP $HTTP_CODE"
+            exit 1
+          fi
+
+          SUCCESS=$(jq -r '.success // false' cf-token-response.json)
+          STATUS=$(jq -r '.result.status // "unknown"' cf-token-response.json)
+
+          if [ "$SUCCESS" != "true" ]; then
+            echo ""
+            echo "❌ Account API Token verification failed."
+            exit 1
+          fi
+
+          if [ "$STATUS" != "active" ]; then
+            echo ""
+            echo "❌ API Token status is: $STATUS"
+            exit 1
+          fi
+
+          echo ""
+          echo "✅ Account API Token is VALID and ACTIVE"
+
+      # -------------------------------------------------------
+      # 6. 安装项目依赖
+      # -------------------------------------------------------
+      - name: Install project dependencies
+        run: npm ci
+
+      # -------------------------------------------------------
+      # 7. 查看 Wrangler 版本
+      # -------------------------------------------------------
+      - name: Check Wrangler version
+        run: |
+          echo "========================================"
+          echo "Wrangler version"
+          echo "========================================"
+          npx wrangler --version
+
+      # -------------------------------------------------------
+      # 8. Wrangler 身份验证
+      # -------------------------------------------------------
+      - name: Verify Wrangler authentication
+        shell: bash
+        run: |
+          echo "========================================"
+          echo "Wrangler authentication"
+          echo "========================================"
+
+          npx wrangler whoami
+
+      # -------------------------------------------------------
+      # 9. 测试 Containers API 权限
+      # -------------------------------------------------------
+      - name: Verify Containers permission
+        shell: bash
+        run: |
+          echo "========================================"
+          echo "Testing Cloudflare Containers permission"
+          echo "========================================"
+
+          npx wrangler containers list
+
+          echo ""
+          echo "✅ Containers API is accessible"
+
+      # -------------------------------------------------------
+      # 10. 所有验证通过
+      # -------------------------------------------------------
+      - name: Authentication summary
+        shell: bash
+        run: |
+          echo ""
+          echo "========================================"
+          echo "✅ ALL CLOUDFLARE CHECKS PASSED"
+          echo "========================================"
+          echo "GitHub Secrets:       OK"
+          echo "Cloudflare API Token: OK"
+          echo "Account ID:           OK"
+          echo "Wrangler auth:        OK"
+          echo "Containers access:    OK"
+          echo ""
+          echo "The credentials are ready for deployment."
