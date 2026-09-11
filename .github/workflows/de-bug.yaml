@@ -1,0 +1,19 @@
+- name: Verify Account API Token
+  shell: bash
+  env:
+    CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+  run: |
+    RESPONSE=$(curl -sS \
+      "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/tokens/verify" \
+      -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN")
+
+    echo "$RESPONSE" | jq '{
+      success: .success,
+      status: .result.status,
+      errors: .errors,
+      messages: .messages
+    }'
+
+    echo "$RESPONSE" | jq -e \
+      '.success == true and .result.status == "active"'
