@@ -1,0 +1,73 @@
+/**
+ * wrangler.jsonc - Cloudflare Workers + Containers configuration
+ *
+ * Environment variable usage:
+ *   Container-level (injected via wrangler secrets):
+ *     - PGSTORE_DSN           : PostgreSQL DSN for direct DB connection from Container
+ *     - OBJECTSTORE_ENDPOINT  : R2-compatible S3 endpoint URL
+ *     - OBJECTSTORE_ACCESS_KEY: R2 access key ID
+ *     - OBJECTSTORE_SECRET_KEY: R2 secret access key
+ *     - OBJECTSTORE_BUCKET    : R2 bucket name
+ *     - MANAGEMENT_PASSWORD   : CLIProxyAPI management console password
+ *
+ * Note: No API_TOKEN is required. Authentication is handled entirely by
+ *       CLIProxyAPI inside the container. The Worker is a pure pass-through.
+ */
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "cliproxy-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-03-01",
+  "keep_vars": true,
+  "compatibility_flags": ["nodejs_compat"],
+
+  // --------------------------------------------------------------------------
+  // Cloudflare Container binding
+  // The container runs CLIProxyAPI and is NOT publicly reachable.
+  // Only the Worker can call it via the `CONTAINER` binding.
+  // --------------------------------------------------------------------------
+  "containers": [
+    {
+      "class_name": "CLIProxyContainer",
+      "image": "./Dockerfile",
+      "max_instances": 1
+    }
+  ],
+  // --------------------------------------------------------------------------
+  // Durable Object binding for the container class
+  // The class_name must match the export in src/index.ts and the containers
+  // array above. The binding name must match Env.CONTAINER in src/types.ts.
+  // --------------------------------------------------------------------------
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "CONTAINER",
+        "class_name": "CLIProxyContainer"
+      }
+    ]
+  },
+  
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "CLIProxyContainer"
+      ]
+    }
+  ],
+  "observability": {
+    "enabled": false,
+    "head_sampling_rate": 1,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "persist": true,
+      "invocation_logs": true
+    },
+    "traces": {
+      "enabled": false,
+      "persist": true,
+      "head_sampling_rate": 1
+    }
+  }
+}
